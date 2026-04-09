@@ -5,7 +5,7 @@ from datetime import datetime
 from collections import defaultdict
 import pandas as pd
 
-# --- Page Configuration (Must be first Streamlit command) ---
+# Page Configuration
 st.set_page_config(
     page_title="GCT Reconciliation Workspace",
     page_icon="📊",
@@ -13,7 +13,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- Utility Functions ---
+# Utility Functions 
 def parse_amount(amt_str):
     if not amt_str: return 0.0
     try: return float(amt_str.replace(',', ''))
@@ -88,7 +88,7 @@ def process_csv_data(file_content):
 
     return dict(monthly_data)
 
-# --- UI Layout ---
+# UI Layout 
 st.title("📊 GCT Reconciliation Workspace")
 st.markdown("Upload your QuickBooks CSV export to generate a clean, month-by-month reconciliation report.")
 
