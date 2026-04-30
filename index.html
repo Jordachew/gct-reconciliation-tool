@@ -1,0 +1,505 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, deleteDoc } from 'firebase/firestore';
+import { 
+  UploadCloud, 
+  FileText, 
+  Settings, 
+  TrendingDown,
+  TrendingUp,
+  Info,
+  ChevronDown,
+  ChevronRight,
+  Calendar,
+  AlertCircle,
+  CheckCircle2,
+  Loader2,
+  CheckCircle,
+  ShieldCheck,
+  X,
+  FileDown,
+  Printer,
+  FileCheck,
+  UserCheck,
+  Save,
+  Award,
+  RotateCcw,
+  Trash2
+} from 'lucide-react';
+
+// --- Firebase Initialization ---
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+
+// --- Utility: Robust CSV Parser ---
+const parseCSV = (text) => {
+  const lines = text.split(/\r?\n/);
+  const result = [];
+  for (let line of lines) {
+    if (!line.trim()) continue;
+    const row = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const char = line[i];
+      if (char === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        row.push(current.trim());
+        current = '';
+      } else {
+        current += char;
+      }
+    }
+    row.push(current.trim());
+    result.push(row);
+  }
+  return result;
+};
+
+// --- Placeholder SVG Logo ---
+const CompanyLogoSVG = ({ className, dark = false }) => (
+  <svg viewBox="0 0 340 80" className={className} xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <linearGradient id="pinkGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stopColor="#be185d" />
+        <stop offset="100%" stopColor="#e11d48" />
+      </linearGradient>
+    </defs>
+    <text x="5" y="45" fontFamily="'Brush Script MT', 'Dancing Script', 'Pacifico', cursive" fontSize="44" fill={dark ? "#ffffff" : "url(#pinkGrad)"} fontWeight="normal">
+      Valentine's
+    </text>
+    <path 
+      d="M 230 30 C 230 30 235 20 245 20 C 255 20 260 28 260 36 C 260 50 240 62 230 68 C 220 62 200 50 200 36 C 200 28 205 20 215 20 C 225 20 230 30 230 30 Z" 
+      fill={dark ? "#fda4af" : "#e11d48"} 
+      transform="scale(0.5) translate(160, -5)" 
+    />
+    <text x="10" y="70" fontFamily="system-ui, -apple-system, sans-serif" fontSize="12" fill={dark ? "#cbd5e1" : "#475569"} letterSpacing="3.5" fontWeight="700">
+      INTIMATES &amp; MORE LIMITED
+    </text>
+  </svg>
+);
+
+// --- Main Application Component ---
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [isFetchingData, setIsFetchingData] = useState(true);
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
+  
+  const [rawData, setRawData] = useState([]);
+  const [headers, setHeaders] = useState([]);
+  const [fileName, setFileName] = useState('');
+  
+  const [liabilityIsPositive, setLiabilityIsPositive] = useState(true);
+  const [selectedMonth, setSelectedMonth] = useState('');
+  const [customLogo, setCustomLogo] = useState(null);
+  const [expandedMonth, setExpandedMonth] = useState(null);
+
+  const [assessments, setAssessments] = useState({}); 
+  const [isCommiting, setIsCommiting] = useState(false);
+  const [isApproving, setIsApproving] = useState(false);
+  const [isRollingBack, setIsRollingBack] = useState(false);
+  
+  const [approvalModalOpen, setApprovalModalOpen] = useState(false);
+  const [rollbackModalOpen, setRollbackModalOpen] = useState(false);
+  const [approverName, setApproverName] = useState('');
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) { console.error(error); }
+    };
+    initAuth();
+    const unsubscribe = onAuthStateChanged(auth, setUser);
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    const loadWorkspace = async () => {
+      try {
+        // RULE 1: Use public path artifacts/{appId}/public/data/{collectionName}
+        const metaRef = doc(db, 'artifacts', appId, 'public', 'data', 'workspace', 'meta');
+        const metaSnap = await getDoc(metaRef);
+        if (metaSnap.exists() && metaSnap.data().numChunks) {
+          const meta = metaSnap.data();
+          let combinedData = [];
+          for (let i = 0; i < meta.numChunks; i++) {
+            const chunkSnap = await getDoc(doc(db, 'artifacts', appId, 'public', 'data', 'workspace', `chunk_${i}`));
+            if (chunkSnap.exists() && chunkSnap.data().dataStr) {
+              combinedData = combinedData.concat(JSON.parse(chunkSnap.data().dataStr));
+            }
+          }
+          setRawData(combinedData);
+          setHeaders(meta.headers || []);
+          setFileName(meta.fileName || 'Public Shared Workspace');
+        }
+        
+        const prefRef = doc(db, 'artifacts', appId, 'public', 'data', 'workspace', 'preferences');
+        const prefSnap = await getDoc(prefRef);
+        if (prefSnap.exists()) {
+          const pData = prefSnap.data();
+          if (pData.selectedMonth !== undefined) setSelectedMonth(pData.selectedMonth);
+          if (pData.customLogo) setCustomLogo(pData.customLogo);
+          if (pData.liabilityIsPositive !== undefined) setLiabilityIsPositive(pData.liabilityIsPositive);
+        }
+      } catch (error) { console.error("Error loading public workspace:", error); } finally {
+        setPrefsLoaded(true);
+        setIsFetchingData(false);
+      }
+    };
+    
+    // Listen for public assessments
+    const q = collection(db, 'artifacts', appId, 'public', 'data', 'assessments');
+    const unsubscribeAssessments = onSnapshot(q, (snapshot) => {
+      const data = {};
+      snapshot.docs.forEach(d => { data[d.id] = d.data(); });
+      setAssessments(data);
+    }, (error) => console.error("Error listening to public assessments:", error));
+    
+    loadWorkspace();
+    return () => unsubscribeAssessments();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user || !prefsLoaded) return;
+    setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'workspace', 'preferences'), {
+      selectedMonth,
+      liabilityIsPositive
+    }, { merge: true }).catch(console.error);
+  }, [selectedMonth, liabilityIsPositive, user, prefsLoaded]);
+
+  const handleLogoUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      const dataUrl = evt.target.result;
+      setCustomLogo(dataUrl);
+      if (user) {
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'workspace', 'preferences'), { customLogo: dataUrl }, { merge: true });
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleFileUpload = (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    setFileName(file.name);
+    setIsFetchingData(true);
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      const parsed = parseCSV(evt.target.result);
+      let headerIdx = -1;
+      for (let i = 0; i < Math.min(20, parsed.length); i++) {
+        const rowLower = parsed[i].map(c => c.toLowerCase());
+        if (rowLower.includes('transaction date') && rowLower.includes('amount')) {
+          headerIdx = i; break;
+        }
+      }
+      if (headerIdx === -1) { setIsFetchingData(false); return; }
+      const foundHeaders = parsed[headerIdx];
+      const amtIdx = foundHeaders.findIndex(h => h.toLowerCase() === 'amount');
+      const dataRows = parsed.slice(headerIdx + 1).filter(row => {
+        if (row.length !== foundHeaders.length) return false;
+        const rawAmt = parseFloat((row[amtIdx] || '0').replace(/,/g, ''));
+        return rawAmt !== 0 && !isNaN(rawAmt);
+      });
+      setHeaders(foundHeaders);
+      setRawData(dataRows);
+      
+      if (user) {
+        const CHUNK_SIZE = 2000;
+        const numChunks = Math.ceil(dataRows.length / CHUNK_SIZE);
+        const metaRef = doc(db, 'artifacts', appId, 'public', 'data', 'workspace', 'meta');
+        await setDoc(metaRef, { headers: foundHeaders, fileName: file.name, numChunks, updatedAt: new Date().toISOString() });
+        for (let i = 0; i < numChunks; i++) {
+          const chunkRef = doc(db, 'artifacts', appId, 'public', 'data', 'workspace', `chunk_${i}`);
+          await setDoc(chunkRef, { dataStr: JSON.stringify(dataRows.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE)) });
+        }
+      }
+      setIsFetchingData(false);
+    };
+    reader.readAsText(file);
+    e.target.value = null;
+  };
+
+  const handleCommitAssessment = async () => {
+    if (!user || !selectedMonth) return;
+    setIsCommiting(true);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'assessments', selectedMonth), {
+        monthKey: selectedMonth, status: 'Committed', committedAt: new Date().toISOString()
+      }, { merge: true });
+    } catch (error) { console.error(error); }
+    setIsCommiting(false);
+  };
+
+  const handleApproveAssessment = async () => {
+    if (!user || !selectedMonth || !approverName.trim()) return;
+    setIsApproving(true);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'assessments', selectedMonth), {
+        status: 'Approved', approvedBy: approverName, approvedAt: new Date().toISOString()
+      }, { merge: true });
+      setApprovalModalOpen(false);
+      setApproverName('');
+    } catch (error) { console.error(error); }
+    setIsApproving(false);
+  };
+
+  const handleRollBack = async () => {
+    if (!user || !selectedMonth) return;
+    setIsRollingBack(true);
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'assessments', selectedMonth));
+      setRollbackModalOpen(false);
+    } catch (error) { console.error(error); }
+    setIsRollingBack(false);
+  };
+
+  const reportData = useMemo(() => {
+    if (!rawData.length || !headers.length) return [];
+    const headerLower = headers.map(h => h ? h.toLowerCase() : '');
+    const dateIdx = headerLower.findIndex(h => h === 'transaction date' || h === 'date');
+    const amtIdx = headerLower.findIndex(h => h === 'amount');
+    const memoIdx = headerLower.findIndex(h => h === 'memo/description' || h === 'memo');
+    const typeIdx = headerLower.findIndex(h => h === 'transaction type' || h === 'type');
+    const nameIdx = headerLower.findIndex(h => h === 'name');
+
+    const monthlyData = {};
+    rawData.forEach(row => {
+      const dateStr = row[dateIdx];
+      const memo = (row[memoIdx] || '').trim();
+      const typeStr = (row[typeIdx] || '').trim();
+      const typeLower = typeStr.toLowerCase();
+      const name = (row[nameIdx] || '').trim();
+      
+      if (!dateStr) return;
+      let monthKey = '';
+      const dateMatch = dateStr.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if (dateMatch) monthKey = `${dateMatch[3]}-${dateMatch[1].padStart(2, '0')}`;
+      else {
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return;
+        monthKey = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+      }
+      const rawAmt = parseFloat((row[amtIdx] || '0').replace(/,/g, ''));
+      if (isNaN(rawAmt) || rawAmt === 0) return;
+      
+      const amt = liabilityIsPositive ? rawAmt : -rawAmt;
+      const memoL = memo.toLowerCase();
+      
+      const isSalesTaxAdjustment = typeLower.includes('sales tax adjustment') || typeLower.includes('sales tax adj') || memoL.includes('tax adjustment');
+      const isJournal = typeLower.includes('journal') && !isSalesTaxAdjustment;
+      const isPayment = (typeLower.includes('sales tax payment') || memoL.includes('payment')) && !isSalesTaxAdjustment && !isJournal;
+      
+      const isOutputGCT = typeLower === 'invoice' || 
+                        typeLower === 'sales receipt' || 
+                        typeLower === 'credit note' || 
+                        typeLower === 'refund' || 
+                        typeLower.includes('sales receipt');
+
+      const inputTypes = ['bill', 'check', 'credit card expense', 'expense'];
+      const isInputGCT = inputTypes.some(t => typeLower === t);
+      const isCreditCardCredit = typeLower === 'credit card credit';
+
+      let category = 'Uncategorized';
+      if (isPayment) category = 'Payment';
+      else if (isSalesTaxAdjustment) category = 'Sales Tax Adj';
+      else if (isJournal) category = 'Journal Adjustment';
+      else if (isOutputGCT) category = 'Output GCT';
+      else if (isInputGCT || isCreditCardCredit) category = 'Input GCT';
+      else category = amt > 0 ? 'Output GCT' : 'Input GCT';
+
+      if (!monthlyData[monthKey]) {
+        monthlyData[monthKey] = { 
+          monthKey, outputGCT: 0, inputGCT: 0, payments: 0, journalAdjustments: 0, salesTaxAdjustments: 0,
+          outputTransactions: [], inputTransactions: [], paymentAndAdjTransactions: [] 
+        };
+      }
+      
+      const tx = { date: dateStr, name, memo, type: typeStr || 'Uncategorized', category, amount: amt };
+      
+      if (category === 'Payment') {
+        monthlyData[monthKey].payments += Math.abs(amt);
+        monthlyData[monthKey].paymentAndAdjTransactions.push(tx);
+      } else if (category === 'Sales Tax Adj') {
+        monthlyData[monthKey].salesTaxAdjustments += amt;
+        monthlyData[monthKey].paymentAndAdjTransactions.push(tx);
+      } else if (category === 'Journal Adjustment') {
+        monthlyData[monthKey].journalAdjustments += amt;
+        monthlyData[monthKey].paymentAndAdjTransactions.push(tx);
+      } else if (category === 'Input GCT') {
+        const inputContribution = isCreditCardCredit ? -Math.abs(amt) : Math.abs(amt);
+        monthlyData[monthKey].inputGCT += inputContribution;
+        monthlyData[monthKey].inputTransactions.push(tx);
+      } else {
+        const outputContribution = (typeLower === 'refund' || typeLower === 'credit note') ? -Math.abs(amt) : Math.abs(amt);
+        monthlyData[monthKey].outputGCT += outputContribution;
+        monthlyData[monthKey].outputTransactions.push(tx);
+      }
+    });
+
+    const sortedMonthKeys = Object.keys(monthlyData).sort();
+    let cumulative = 0;
+    return sortedMonthKeys.map((monthKey, idx) => {
+      const current = monthlyData[monthKey];
+      const prevCumulative = cumulative;
+      const totalAdjustments = current.journalAdjustments + current.salesTaxAdjustments;
+      const monthlyGenerated = current.outputGCT - current.inputGCT + totalAdjustments;
+      
+      const dateParts = monthKey.split('-');
+      const nextMonthDate = new Date(parseInt(dateParts[0]), parseInt(dateParts[1]), 1);
+      const nextKey = `${nextMonthDate.getFullYear()}-${String(nextMonthDate.getMonth() + 1).padStart(2, '0')}`;
+      const paymentApplied = monthlyData[nextKey] ? monthlyData[nextKey].payments : 0;
+      
+      cumulative = monthlyGenerated + prevCumulative - paymentApplied;
+
+      const [year, month] = monthKey.split('-');
+      const dateObj = new Date(year, parseInt(month) - 1);
+      const monthName = dateObj.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+      const assData = assessments[monthKey] || {};
+
+      return { 
+        ...current, monthName, prevCumulative, monthlyGenerated, appliedPayment: paymentApplied,
+        totalAdjustments, cumulativeBalance: cumulative, assessmentStatus: assData.status || 'Draft', 
+        approvedBy: assData.approvedBy, approvedAt: assData.approvedAt,
+        hasNextMonth: !!monthlyData[nextKey]
+      };
+    });
+  }, [rawData, headers, liabilityIsPositive, assessments]);
+
+  const filteredReportData = useMemo(() => selectedMonth ? reportData.filter(row => row.monthKey <= selectedMonth) : reportData, [reportData, selectedMonth]);
+  const tableData = useMemo(() => [...filteredReportData].reverse(), [filteredReportData]);
+  const approvedReports = useMemo(() => reportData.filter(r => r.assessmentStatus === 'Approved').sort((a,b) => b.monthKey.localeCompare(a.monthKey)), [reportData]);
+  const currentAssessment = selectedMonth ? tableData.find(r => r.monthKey === selectedMonth) : (tableData.length > 0 ? tableData[0] : null);
+
+  const formatCurrency = (val) => new Intl.NumberFormat('en-JM', { style: 'currency', currency: 'JMD' }).format(val);
+  const formatDate = (iso) => iso ? new Date(iso).toLocaleDateString('en-JM', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+
+  const generatePDFReport = (assessmentToPrint = currentAssessment) => {
+    if (!assessmentToPrint || assessmentToPrint.assessmentStatus !== 'Approved') return;
+    const printWindow = window.open('', '_blank');
+    const allOut = [...assessmentToPrint.outputTransactions].sort((a,b) => Math.abs(b.amount) - Math.abs(a.amount));
+    const allIn = [...assessmentToPrint.inputTransactions].sort((a,b) => Math.abs(b.amount) - Math.abs(a.amount));
+    const allActivity = [...assessmentToPrint.paymentAndAdjTransactions].sort((a,b) => Math.abs(b.amount) - Math.abs(a.amount));
+    
+    const htmlContent = `
+      <!DOCTYPE html><html><head><title>GCT Report - ${assessmentToPrint.monthName}</title>
+      <style>body{font-family:Arial,sans-serif;color:#334;padding:40px;line-height:1.4} .page{page-break-after:always;min-height:95vh} .header{display:flex;justify-content:space-between;border-bottom:2px solid #e2e8f0;padding-bottom:15px;margin-bottom:20px} .logo{height:50px} .summary{background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;padding:20px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center} .label{font-size:10px;font-weight:bold;color:#647;text-transform:uppercase} .value{font-size:28px;font-weight:900;color:${assessmentToPrint.cumulativeBalance < 0 ? '#10b' : '#e11'}} .grid{display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-bottom:30px} .section{border:1px solid #e2e8f0;border-radius:8px;padding:15px} .row{display:flex;justify-content:space-between;margin-bottom:8px;font-size:12px} .total{font-weight:bold;margin-top:10px;padding-top:5px;border-top:1px dashed #e2e8f0} table{width:100%;border-collapse:collapse;font-size:10px} th{background:#f8fafc;text-align:left;padding:8px;border-bottom:1px solid #e2e8f0} td{padding:6px 8px;border-bottom:1px solid #f1f5f9} .amt{text-align:right;font-weight:bold}</style>
+      </head><body><div class="page"><div class="header"><div>${customLogo ? `<img src="${customLogo}" class="logo" />` : `<h2>Valentine's Intimates</h2>`}</div><div style="text-align:right"><h1>GCT Assessment</h1><p>Valentine's Intimates and More Limited</p><p>${assessmentToPrint.monthName}</p></div></div>
+      <div class="summary"><div><div class="label">Period</div><div style="font-size:16px;font-weight:bold">${assessmentToPrint.monthName}</div></div><div style="text-align:right"><div class="label">Total YTD Balance</div><div class="value">${formatCurrency(assessmentToPrint.cumulativeBalance)}</div></div></div>
+      <div class="grid"><div class="section"><div class="label" style="margin-bottom:10px">Monthly Calculation</div><div class="row"><span>Output GCT</span><span>${formatCurrency(assessmentToPrint.outputGCT)}</span></div><div class="row"><span>Input GCT</span><span>(${formatCurrency(assessmentToPrint.inputGCT)})</span></div><div class="row"><span>Journal Adjustments</span><span>${formatCurrency(assessmentToPrint.journalAdjustments)}</span></div><div class="row"><span>Sales Tax Adjustments</span><span>${formatCurrency(assessmentToPrint.salesTaxAdjustments)}</span></div><div class="row total"><span>Net Period Generated</span><span>${formatCurrency(assessmentToPrint.monthlyGenerated)}</span></div></div>
+      <div class="section"><div class="label" style="margin-bottom:10px">Reconciliation</div><div class="row"><span>Opening Balance (B/F)</span><span>${formatCurrency(assessmentToPrint.prevCumulative)}</span></div><div class="row"><span>Current Liability</span><span>+ ${formatCurrency(assessmentToPrint.monthlyGenerated)}</span></div><div class="row"><span>Less Payment Applied</span><span style="color:#10b981">- ${formatCurrency(assessmentToPrint.appliedPayment)}</span></div><div class="row total"><span>Closing Balance Due</span><span>${formatCurrency(assessmentToPrint.cumulativeBalance)}</span></div></div></div>
+      <div class="page"><h2>Transaction Annex</h2><table><thead><tr><th>Date</th><th>Name</th><th>Memo</th><th>Type</th><th class="amt">Amount</th></tr></thead><tbody>
+      ${[...allOut, ...allIn, ...allActivity].map(tx => `<tr><td>${tx.date}</td><td>${tx.name || '-'}</td><td>${tx.memo || '-'}</td><td>${tx.type}</td><td class="amt">${formatCurrency(tx.amount)}</td></tr>`).join('')}
+      </tbody></table></div><script>window.onload=function(){window.print()}</script></body></html>
+    `;
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
+  };
+
+  const GroupedTransactionList = ({ transactions, borderColor, categoryGroup, emptyText }) => {
+    const [expandedType, setExpandedType] = useState(null);
+    if (transactions.length === 0) return <span className="text-[11px] text-slate-400 italic">{emptyText}</span>;
+    const grouped = useMemo(() => {
+       const groups = {};
+       transactions.forEach(tx => {
+         const t = tx.type || 'Uncategorized'; 
+         if (!groups[t]) groups[t] = { type: t, amount: 0, items: [] };
+         groups[t].amount += Math.abs(tx.amount); groups[t].items.push(tx);
+       });
+       return Object.values(groups).map(g => {
+         g.items.sort((a,b) => Math.abs(b.amount) - Math.abs(a.amount)); return g;
+       }).sort((a,b) => b.amount - a.amount);
+    }, [transactions]);
+    const getAmountColor = (amt) => (categoryGroup === 'Output') ? 'text-slate-800' : (categoryGroup === 'Input' ? 'text-purple-600' : 'text-emerald-600');
+    return (<div className="space-y-2 max-h-[300px] overflow-y-auto pr-1">{grouped.map(group => (<div key={group.type} className={`bg-white rounded shadow-sm border ${borderColor} overflow-hidden`}><div onClick={() => setExpandedType(expandedType === group.type ? null : group.type)} className="p-2 flex justify-between items-center cursor-pointer hover:bg-slate-50">
+      <div className="flex items-center gap-1.5 min-w-0">{expandedType === group.type ? <ChevronDown className="w-3.5 h-3.5 text-slate-400" /> : <ChevronRight className="w-3.5 h-3.5 text-slate-400" />}<span className="font-bold text-slate-700 capitalize text-[11px] truncate">{group.type}</span><span className="text-[9px] px-1.5 py-0.5 bg-slate-100 rounded-full shrink-0">{group.items.length}</span></div>
+      <span className={`font-mono font-bold text-[11px] shrink-0 pl-2 ${getAmountColor(group.amount)}`}>{formatCurrency(group.amount)}</span></div>{expandedType === group.type && (<div className="bg-slate-50 border-t p-1.5 space-y-1">{group.items.map((item, i) => (<div key={i} className="flex justify-between items-start text-[10px] p-1.5 border-b border-slate-200/60 last:border-0"><div className="flex flex-col min-w-0 pr-2"><span className="font-semibold text-slate-700 truncate">{item.name || 'No Name'}</span>{item.memo && <span className="text-slate-500 truncate text-[9px]">{item.memo}</span>}</div><span className={`font-mono font-medium shrink-0 pt-0.5 ${getAmountColor(item.amount)}`}>{formatCurrency(Math.abs(item.amount))}</span></div>))}</div>)}</div>))}</div>);
+  };
+
+  if (isFetchingData) return <div className="min-h-screen bg-slate-50 flex items-center justify-center text-blue-600 font-medium"><Loader2 className="animate-spin mr-2" /> Loading Public Shared Data...</div>;
+
+  return (
+    <div className="min-h-screen bg-slate-50 p-4 md:p-6 font-sans text-slate-800 relative">
+      {approvalModalOpen && currentAssessment && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"><div className="p-6 border-b flex justify-between items-center bg-slate-50"><h3 className="text-lg font-bold flex items-center gap-2"><UserCheck className="text-emerald-600" />Public Approval</h3><button onClick={() => setApprovalModalOpen(false)}><X /></button></div><div className="p-6"><div className="mb-5 bg-emerald-50 border p-4 rounded text-sm">Approving <strong>{currentAssessment.monthName}</strong> for the public workspace. Final Balance: <strong>{formatCurrency(currentAssessment.cumulativeBalance)}</strong>.</div><label className="block text-sm font-medium mb-2">Approver Name</label><input type="text" value={approverName} onChange={(e) => setApproverName(e.target.value)} className="w-full border rounded p-3 text-sm focus:ring-2 focus:ring-emerald-500" placeholder="Officer Name" autoFocus /></div><div className="p-5 border-t flex justify-end gap-3"><button onClick={() => setApprovalModalOpen(false)} className="px-4 py-2 text-sm">Cancel</button><button onClick={handleApproveAssessment} className="px-6 py-2 text-sm bg-emerald-600 text-white rounded" disabled={isApproving || !approverName.trim()}>{isApproving ? 'Finalizing...' : 'Approve for All Users'}</button></div></div></div>
+      )}
+      {rollbackModalOpen && currentAssessment && (
+        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4"><div className="bg-white rounded-2xl w-full max-w-md overflow-hidden"><div className="p-6 border-b flex justify-between bg-rose-50 font-bold"><h3 className="flex items-center gap-2 text-rose-800"><RotateCcw /> Roll Back</h3><button onClick={() => setRollbackModalOpen(false)}><X /></button></div><div className="p-6 text-sm">Reset <strong>{currentAssessment.monthName}</strong> to draft for all users? This cannot be undone.</div><div className="p-5 flex justify-end gap-3"><button onClick={() => setRollbackModalOpen(false)} className="px-4 py-2">Cancel</button><button onClick={handleRollBack} className="px-6 py-2 bg-rose-600 text-white rounded">Confirm Reset</button></div></div></div>
+      )}
+
+      <div className="max-w-[1400px] mx-auto space-y-6">
+        <header className="bg-white p-5 rounded-xl shadow-sm border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">{customLogo ? <img src={customLogo} alt="Logo" className="h-14 w-auto shrink-0 object-contain" /> : <CompanyLogoSVG className="h-14 w-auto shrink-0" />}<div className="h-12 w-px bg-slate-200 hidden md:block"></div><div className="hidden md:block"><h1 className="text-lg font-bold text-slate-900 flex items-center gap-2"><ShieldCheck className="text-emerald-600" />Public Audit Workspace</h1><p className="text-slate-500 mt-0.5 text-xs font-medium">Valentine's Intimates and More Limited</p></div></div>
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] font-bold text-slate-400 bg-slate-100 px-2 py-1 rounded uppercase tracking-wider">Public Access Enabled</span>
+            <label className="text-sm px-4 py-2 bg-blue-600 text-white rounded-lg font-medium cursor-pointer shadow-sm flex items-center gap-2 hover:bg-blue-700 transition-colors"><UploadCloud className="w-4 h-4" />Upload Shared CSV<input type="file" accept=".csv" className="hidden" onChange={handleFileUpload} /></label>
+          </div>
+        </header>
+
+        <div className="flex flex-col md:flex-row gap-6 items-start">
+          <div className="w-full md:w-[220px] lg:w-[240px] shrink-0 space-y-4 md:sticky top-6">
+            <div className="bg-white p-4 rounded-xl shadow-sm border"><div className="flex items-center gap-2 mb-3"><Award className="text-emerald-600" /><h3 className="text-sm font-semibold">Public Reports</h3></div><div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                {approvedReports.length === 0 ? <p className="text-[10px] text-slate-400 italic">No public reports yet.</p> : approvedReports.map(report => (<button key={report.monthKey} onClick={() => generatePDFReport(report)} className="w-full text-left p-2 rounded border border-emerald-50 bg-emerald-50/30 hover:bg-emerald-100/50 group"><div className="text-[11px] font-bold text-emerald-800 flex justify-between"><span>{report.monthName}</span><FileDown className="w-3 h-3" /></div><div className="text-[9px] text-emerald-600/70">Appr: ${report.approvedBy}</div></button>))}
+            </div></div>
+            <div className="bg-white p-4 rounded-xl shadow-sm border border-blue-200 relative overflow-hidden"><div className="absolute top-0 left-0 w-1 h-full bg-blue-500"></div><div className="flex items-center gap-2 mb-2"><Calendar className="text-blue-600" /><h3 className="text-sm font-semibold">Review Month</h3></div><select className="w-full text-xs p-2 border rounded focus:ring-blue-500 font-medium" value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} disabled={rawData.length === 0}><option value="">Select Month...</option>{reportData.map(row => (<option key={row.monthKey} value={row.monthKey}>{row.monthName} {row.assessmentStatus === 'Approved' ? '✓' : (row.assessmentStatus === 'Committed' ? '○' : '')}</option>))}</select></div>
+            <div className="bg-white p-4 rounded-xl shadow-sm border"><div className="flex gap-2 mb-2"><Info className="text-blue-500 shrink-0" /><h3 className="text-sm font-semibold">Shared Storage</h3></div><div className="text-[11px] text-slate-600 space-y-2"><p>All data uploaded here is visible to team members with access to this dashboard.</p></div></div>
+          </div>
+
+          <div className="flex-1 min-w-0 space-y-6">
+            {currentAssessment ? (
+              <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-xl shadow-xl overflow-hidden relative">
+                <div className="absolute -right-20 -top-20 w-64 h-64 rounded-full bg-white opacity-5 blur-2xl"></div>
+                <div className="p-8 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-6 relative z-10">
+                  <div>
+                    <div className="flex items-center gap-3 mb-1"><h2 className="text-slate-400 text-xs font-bold uppercase tracking-widest">Public GCT Position</h2>{currentAssessment.assessmentStatus === 'Approved' && <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded text-[10px] font-bold uppercase flex items-center gap-1"><ShieldCheck className="w-3 h-3" /> Shared Approval</span>}</div>
+                    <div className="text-3xl font-bold text-white tracking-tight">{currentAssessment.monthName}</div>
+                    <div className="flex wrap gap-3 mt-6">
+                      {currentAssessment.assessmentStatus === 'Draft' && (<button onClick={handleCommitAssessment} className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-bold rounded-lg flex items-center gap-2 shadow-lg"><Save className="w-4 h-4" /> Commit for All</button>)}
+                      {currentAssessment.assessmentStatus === 'Committed' && (<><button onClick={() => setApprovalModalOpen(true)} className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-bold rounded-lg shadow-lg"><UserCheck className="w-4 h-4" /> Approve Publicly</button><button onClick={() => setRollbackModalOpen(true)} className="px-5 py-2.5 bg-white/10 text-white rounded border border-white/20 hover:bg-white/20 transition-colors"><RotateCcw className="w-4 h-4" /> Roll Back</button></>)}
+                      {currentAssessment.assessmentStatus === 'Approved' && (<><button onClick={() => generatePDFReport(currentAssessment)} className="px-5 py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-lg flex items-center gap-2 border border-white/20 shadow-lg transition-colors"><FileDown className="w-4 h-4" /> Download PDF</button><button onClick={() => setRollbackModalOpen(true)} className="px-5 py-2.5 bg-rose-900/30 text-rose-200 rounded border border-rose-500/30 hover:bg-rose-900/50 transition-colors"><RotateCcw className="w-4 h-4" /> Redo Public Audit</button></>)}
+                    </div>
+                  </div>
+                  <div className="md:text-right bg-white/10 p-5 rounded-xl border border-white/10 min-w-[260px]"><div className="text-slate-300 text-[10px] font-bold uppercase mb-1.5">Public Closing Balance</div><div className={`text-4xl font-black ${currentAssessment.cumulativeBalance < 0 ? 'text-rose-400' : 'text-emerald-400'}`}>{formatCurrency(currentAssessment.cumulativeBalance)}</div><div className="flex items-center gap-1.5 mt-2 text-white/50 text-[10px] xl:justify-end uppercase">Public View: ${currentAssessment.assessmentStatus}</div></div>
+                </div>
+              </div>
+            ) : (
+              <div className="bg-gradient-to-br from-slate-900 to-slate-800 rounded-xl shadow-xl overflow-hidden relative p-12 flex flex-col justify-center items-center text-center"><div className="absolute -left-20 -bottom-20 w-64 h-64 rounded-full bg-white opacity-5 blur-2xl"></div><h2 className="text-2xl font-bold text-white mb-2 relative z-10">Public Reconciliation Workspace</h2><p className="text-slate-400 text-sm">Upload data or select a shared month to begin collaborative audit.</p></div>
+            )}
+
+            <div className="bg-white rounded-xl shadow-sm border overflow-hidden"><div className="p-4 border-b bg-slate-50 flex justify-between items-center"><h3 className="font-semibold text-sm">Public Shared Ledger</h3></div><div className="overflow-x-auto"><table className="w-full text-sm text-left"><thead className="text-[11px] text-slate-500 uppercase bg-slate-50 border-b font-bold">
+              <tr><th className="px-4 py-3">Liability Period</th><th className="px-4 py-3 text-right text-slate-400">Opening Bal.</th><th className="px-4 py-3 text-right text-blue-600">Output</th><th className="px-4 py-3 text-right text-purple-600">Input</th><th className="px-4 py-3 text-right text-amber-600">Journals</th><th className="px-4 py-3 text-right text-orange-600">Sales Tax Adj.</th><th className="px-4 py-3 text-right">Net Generated</th><th className="px-4 py-3 text-right text-emerald-600">Payment</th><th className="px-4 py-3 text-right">Closing Balance</th></tr></thead><tbody>
+              {tableData.map((row, idx) => { const isAssessedMonth = selectedMonth ? row.monthKey === selectedMonth : false; return (
+                <React.Fragment key={row.monthKey}><tr onClick={() => setExpandedMonth(expandedMonth === row.monthKey ? null : row.monthKey)} className={`border-b transition-colors cursor-pointer ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} ${isAssessedMonth ? 'bg-blue-50/30' : ''}`}><td className="px-4 py-4 font-bold whitespace-nowrap flex items-center gap-1.5">{expandedMonth === row.monthKey ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}{row.monthName}</td>
+                  <td className="px-4 py-4 text-right text-slate-400 font-mono text-[10px]">{formatCurrency(row.prevCumulative)}</td><td className="px-4 py-4 text-right text-blue-700">{formatCurrency(row.outputGCT)}</td><td className="px-4 py-4 text-right text-purple-700">{formatCurrency(row.inputGCT)}</td><td className="px-4 py-4 text-right text-amber-600">{formatCurrency(row.journalAdjustments)}</td><td className="px-4 py-4 text-right text-orange-600">{formatCurrency(row.salesTaxAdjustments)}</td><td className="px-4 py-4 text-right font-medium">{formatCurrency(row.monthlyGenerated)}</td><td className="px-4 py-4 text-right text-emerald-600">{formatCurrency(row.appliedPayment)}</td><td className="px-4 py-4 text-right"><div className={`font-black px-2 py-1 rounded inline-block text-[11px] ${row.cumulativeBalance < 0 ? 'text-rose-600 bg-rose-50 border border-rose-100' : 'text-emerald-700 bg-emerald-50 border border-emerald-100'}`}>{formatCurrency(row.cumulativeBalance)}</div></td></tr>
+                  {expandedMonth === row.monthKey && (<tr className="bg-slate-50 shadow-inner"><td colSpan="9" className="px-5 py-5"><div className="bg-white p-4 rounded-xl border"><div className="mb-4 border-b pb-2 font-bold text-sm">Detailed Transaction Breakdown</div><div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                    <div className="bg-blue-50/40 p-3 rounded-lg border border-blue-100 flex flex-col max-h-[350px]"><h5 className="text-[11px] font-bold text-blue-800 uppercase mb-2">Sales Detail</h5><GroupedTransactionList transactions={row.outputTransactions} borderColor="border-blue-50" categoryGroup="Output" emptyText="No sales tax collected." /></div>
+                    <div className="bg-purple-50/40 p-3 rounded-lg border border-purple-100 flex flex-col max-h-[350px]"><h5 className="text-[11px] font-bold text-purple-800 uppercase mb-2">Purchase Detail</h5><GroupedTransactionList transactions={row.inputTransactions} borderColor="border-purple-50" categoryGroup="Input" emptyText="No input tax paid." /></div>
+                    <div className="bg-emerald-50/40 p-3 rounded-lg border border-emerald-100 flex flex-col max-h-[350px]"><h5 className="text-[11px] font-bold text-emerald-800 uppercase mb-2">Settlement Detail (Journals/Payments)</h5><GroupedTransactionList transactions={row.paymentAndAdjTransactions} borderColor="border-emerald-50" categoryGroup="PaymentAdj" emptyText="No audit activity recorded." /></div>
+                  </div></div></td></tr>)}
+                </React.Fragment>
+              )})}</tbody></table></div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
